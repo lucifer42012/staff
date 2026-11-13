@@ -51,25 +51,34 @@ th{font-size:12px;color:var(--mut)}
 
 <script>
 var ST = {
-  staff: [], 
-  rec: {}, 
-  loc: {on:false, lat:null, lng:null, r:100},
-  accounts: {
-    "admin": {pass: "admin123", role: "admin", name: "Administrator", staffId: null}
-  }
+  staff: [], 
+  rec: {}, 
+  loc: {on:false, lat:null, lng:null, r:100},
+  accounts: {
+    "admin": {pass: "admin123", role: "admin", name: "Administrator", staffId: null}
+  }
 };
-var currentUser = null; 
-var GPS = null, tab = "today", date = today(), q = "", month = today().slice(0,7);
+var currentUser = null; 
+
+// Restore saved session if available
+try {
+  var savedUser = localStorage.getItem("attendance-session");
+  if(savedUser) {
+    currentUser = JSON.parse(savedUser);
+  }
+} catch(e){}
+
+var GPS = null, tab = currentUser ? (currentUser.role === "admin" ? "today" : "myportal") : "today", date = today(), q = "", month = today().slice(0,7);
 var LBL = {P:"Present", L:"Late", A:"Absent", V:"Leave"};
 
 function today(){
-  var d = new Date();
-  return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
+  var d = new Date();
+  return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
 }
 
 function currentTimeStr(){
-  var d = new Date();
-  return d.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'});
+  var d = new Date();
+  return d.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'});
 }
 
 // PASTE YOUR WEB APP URL HERE INSIDE THE QUOTES:
@@ -111,6 +120,25 @@ function load(){
     });
 }
 
+function save(){
+  try {
+    localStorage.setItem("attendance-v5", JSON.stringify(ST));
+  }catch(e){}
+
+  fetch(API_URL, {
+    method: "POST",
+    mode: "no-cors",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(ST)
+  }).catch(function(err){
+    console.error("Sync error:", err);
+  });
+}
+
+function esc(s){
+  return String(s).replace(/[&<>"]/g, function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]});
+}
+
 function renderAuth(){
   if(!isLoaded){
     document.getElementById("app").innerHTML = '<div class="card auth-wrap" style="text-align:center">Loading system data...</div>';
@@ -133,11 +161,9 @@ function renderAuth(){
 }
 
 function doLogin(){
-  // Normalize username to lowercase and trim spaces
   var u = document.getElementById("login-user").value.trim().toLowerCase();
   var p = document.getElementById("login-pass").value.trim();
   
-  // Match username case-insensitively against stored accounts
   var matchedKey = Object.keys(ST.accounts).find(function(k){
     return k.toLowerCase() === u;
   });
@@ -147,8 +173,131 @@ function doLogin(){
     return;
   }
   currentUser = {username: matchedKey, ...ST.accounts[matchedKey]};
+  
+  // Persist session
+  try {
+    localStorage.setItem("attendance-session", JSON.stringify(currentUser));
+  } catch(e){}
+
   tab = currentUser.role === "admin" ? "today" : "myportal";
   render();
+}
+
+function logout(){
+  currentUser = null;
+  try {
+    localStorage.removeItem("attendance-session");
+  } catch(e){}
+  render();
+}
+
+function renderNav(){
+  if(currentUser.role === "admin"){
+    var t = {today: "Daily", report: "Monthly", staff: "Staff & Accounts"};
+    return Object.keys(t).map(function(k){
+      return '<button class="'+(tab===k?"on":"")+'" onclick="tab=\''+k+'\';render()">'+t[k]+"</button>";
+    }).join("");
+  } else {
+    return '<button class="on">My Attendance Portal</button>';
+  }
+}
+
+function dist(a,b,c,d){
+  var R = 6371000, x = Math.PI/180, dl = (c-a)*x, dg = (d-b)*x;
+  var h = Math.sin(dl/2)*Math.sin(dl/2) + Math.cos(a*x)*Math.cos(c*x)*Math.sin(dg/2)*Math.sin(dg/2);
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+function getPos(cb){
+  if(!navigator.geolocation) return cb("This browser does not support location.");
+  navigator.geolocation.getCurrentPosition(
+    function(p){ cb(null, p); },
+    function(e){ cb(e.code === 1 ? "Location permission denied." : "Could not get your location."); },
+    {enableHighAccuracy: true, timeout: 12000, maximumAge: 0}
+  );
+}
+
+function checkLoc(){
+  GPS = {msg: "Checking location…"};
+  render();
+  getPos(function(err, p){
+    GPS = err ? {err: err} : {d: dist(p.coords.latitude, p.coords.longitude, ST.loc.lat, ST.loc.lng), t: Date.now()};
+    render();
+  });
+}
+
+function gate(fn){
+  if(!ST.loc.on){ fn(); return; }
+  if(date !== today()){ alert("With location lock on, attendance can only be marked for today."); return; }
+  getPos(function(err, p){
+    if(err){ GPS = {err: err}; render(); alert(err); return; }
+    var d = dist(p.coords.latitude, p.coords.longitude, ST.loc.lat, ST.loc.lng);
+    GPS = {d: d, t: Date.now()};
+    if(d > ST.loc.r){ render(); alert("You are " + Math.round(d) + " m away. Move within " + ST.loc.r + " m."); return; }
+    fn();
+  });
+}
+
+function locBanner(){
+  if(!ST.loc.on) return "";
+  var g = GPS, t, c = "var(--mut)";
+  if(!g || g.msg) t = (g && g.msg) || "Location not checked yet";
+  else if(g.err) { t = g.err; c = "var(--a)"; }
+  else if(g.d <= ST.loc.r) { t = "At workplace (" + Math.round(g.d) + " m away). Marking enabled"; c = "var(--p)"; }
+  else { t = "Outside allowed area (" + Math.round(g.d) + " m away, limit " + ST.loc.r + " m)"; c = "var(--a)"; }
+  return '<div class="card row"><span class="grow" style="font-weight:600;color:'+c+'">📍 '+t+'</span><button class="pri" onclick="checkLoc()">Check location</button></div>';
+}
+
+function setOffice(){
+  getPos(function(err, p){
+    if(err){ alert(err); return; }
+    ST.loc.lat = p.coords.latitude; ST.loc.lng = p.coords.longitude;
+    save(); render();
+    alert("Workplace location saved successfully.");
+  });
+}
+
+function setRadius(v){
+  v = parseInt(v, 10);
+  if(!(v >= 10)) v = 100;
+  ST.loc.r = v; save(); render();
+}
+
+function toggleLock(on){
+  if(on && ST.loc.lat == null){ alert("Set workplace location first."); render(); return; }
+  ST.loc.on = on; save(); GPS = null;
+  if(on) checkLoc(); else render();
+}
+
+function locSettings(){
+  var L = ST.loc;
+  return '<div class="card"><div class="row"><div class="grow"><div class="name">📍 Location lock</div><div class="mut">'+(L.lat==null?"Workplace not set":"Workplace set: "+L.lat.toFixed(5)+", "+L.lng.toFixed(5))+'</div></div><label class="row"><input type="checkbox" '+(L.on?"checked":"")+' onchange="toggleLock(this.checked)"> On</label></div><div class="row" style="margin-top:10px"><button class="pri" onclick="setOffice()">Use current location as workplace</button><label class="mut">Radius (m) <input type="number" min="10" step="10" value="'+L.r+'" style="width:90px" onchange="setRadius(this.value)"></label></div></div>';
+}
+
+function mark(id, s){
+  gate(function(){
+    var r = ST.rec[date] = ST.rec[date] || {};
+    var currentStatus = typeof r[id] === 'object' ? r[id].status : r[id];
+    if(currentStatus === s) {
+      delete r[id]; 
+    } else {
+      r[id] = { status: s, time: currentTimeStr() };
+    }
+    save(); render();
+  });
+}
+
+function markAll(){
+  gate(function(){
+    var r = ST.rec[date] = ST.rec[date] || {};
+    ST.staff.forEach(function(p){ 
+      var currentStatus = typeof r[p.id] === 'object' ? r[p.id].status : r[p.id];
+      if(!currentStatus) {
+        r[p.id] = { status: "P", time: currentTimeStr() };
+      }
+    });
+    save(); render();
+  });
 }
 
 function addStaffAndAccount(){
@@ -168,111 +317,111 @@ function addStaffAndAccount(){
 }
 
 function delStaff(id){
-  if(!confirm("Remove this staff member, their account, and attendance records?")) return;
-  ST.staff = ST.staff.filter(function(p){ return p.id !== id; });
-  for(var u in ST.accounts){
-    if(ST.accounts[u].staffId === id) delete ST.accounts[u];
-  }
-  for(var d in ST.rec) delete ST.rec[d][id];
-  save(); render();
+  if(!confirm("Remove this staff member, their account, and attendance records?")) return;
+  ST.staff = ST.staff.filter(function(p){ return p.id !== id; });
+  for(var u in ST.accounts){
+    if(ST.accounts[u].staffId === id) delete ST.accounts[u];
+  }
+  for(var d in ST.rec) delete ST.rec[d][id];
+  save(); render();
 }
 
 function vToday(){
-  var r = ST.rec[date] || {}, c = {P:0, L:0, A:0, V:0}, un = 0;
-  ST.staff.forEach(function(p){ 
-    var st = r[p.id] ? (typeof r[p.id] === 'object' ? r[p.id].status : r[p.id]) : null;
-    if(st) c[st]++; else un++; 
-  });
-  var list = ST.staff.filter(function(p){ return p.name.toLowerCase().indexOf(q.toLowerCase()) > -1; });
-  
-  var h = '<div class="card row"><input type="date" id="dt" value="'+date+'" onchange="date=this.value;render()"><input class="grow" id="sq" placeholder="Search staff…" value="'+esc(q)+'" oninput="q=this.value;renderKeep()"><button class="pri" onclick="markAll()">All present</button></div>';
-  h += locBanner() + '<div class="stats">' + ["P","L","A","V"].map(function(k){return '<div class="stat"><b style="color:var(--'+k.toLowerCase()+')">'+c[k]+"</b><span>"+LBL[k]+"</span></div>"}).join("") + '<div class="stat"><b>'+un+"</b><span>Unmarked</span></div></div>";
-  if(!ST.staff.length) return h + '<div class="empty">No staff added yet.</div>';
-  
-  h += list.map(function(p){
-    var recordObj = r[p.id];
-    var st = recordObj ? (typeof recordObj === 'object' ? recordObj.status : recordObj) : null;
-    var tm = (recordObj && typeof recordObj === 'object' && recordObj.time) ? recordObj.time : "";
-    
-    return '<div class="card row"><div class="grow"><div class="name">'+esc(p.name)+'</div><div class="mut">'+esc(p.role||"—")+'</div>'+(tm ? '<div class="time-tag">Logged at: '+tm+'</div>' : '')+'</div><div class="seg">'+["P","L","A","V"].map(function(k){return '<button class="'+k+(st===k?" on":"")+'" onclick="mark(\''+p.id+"','"+k+'\')">'+LBL[k]+"</button>"}).join("")+"</div></div>";
-  }).join("");
-  return h;
+  var r = ST.rec[date] || {}, c = {P:0, L:0, A:0, V:0}, un = 0;
+  ST.staff.forEach(function(p){ 
+    var st = r[p.id] ? (typeof r[p.id] === 'object' ? r[p.id].status : r[p.id]) : null;
+    if(st) c[st]++; else un++; 
+  });
+  var list = ST.staff.filter(function(p){ return p.name.toLowerCase().indexOf(q.toLowerCase()) > -1; });
+  
+  var h = '<div class="card row"><input type="date" id="dt" value="'+date+'" onchange="date=this.value;render()"><input class="grow" id="sq" placeholder="Search staff…" value="'+esc(q)+'" oninput="q=this.value;renderKeep()"><button class="pri" onclick="markAll()">All present</button></div>';
+  h += locBanner() + '<div class="stats">' + ["P","L","A","V"].map(function(k){return '<div class="stat"><b style="color:var(--'+k.toLowerCase()+')">'+c[k]+"</b><span>"+LBL[k]+"</span></div>"}).join("") + '<div class="stat"><b>'+un+"</b><span>Unmarked</span></div></div>";
+  if(!ST.staff.length) return h + '<div class="empty">No staff added yet.</div>';
+  
+  h += list.map(function(p){
+    var recordObj = r[p.id];
+    var st = recordObj ? (typeof recordObj === 'object' ? recordObj.status : recordObj) : null;
+    var tm = (recordObj && typeof recordObj === 'object' && recordObj.time) ? recordObj.time : "";
+    
+    return '<div class="card row"><div class="grow"><div class="name">'+esc(p.name)+'</div><div class="mut">'+esc(p.role||"—")+'</div>'+(tm ? '<div class="time-tag">Logged at: '+tm+'</div>' : '')+'</div><div class="seg">'+["P","L","A","V"].map(function(k){return '<button class="'+k+(st===k?" on":"")+'" onclick="mark(\''+p.id+"','"+k+'\')">'+LBL[k]+"</button>"}).join("")+"</div></div>";
+  }).join("");
+  return h;
 }
 
 function vReport(){
-  var h = '<div class="card row"><label class="mut">Month</label><input type="month" value="'+month+'" onchange="month=this.value;render()"></div>';
-  if(!ST.staff.length) return h + '<div class="empty">No staff yet.</div>';
-  var rows = ST.staff.map(function(p){
-    var c = {P:0, L:0, A:0, V:0};
-    for(var d in ST.rec){ 
-      if(d.slice(0,7) === month && ST.rec[d][p.id]){
-        var st = typeof ST.rec[d][p.id] === 'object' ? ST.rec[d][p.id].status : ST.rec[d][p.id];
-        if(c[st] !== undefined) c[st]++;
-      }
-    }
-    var worked = c.P + c.L, tot = worked + c.A + c.V, pct = tot ? Math.round(worked/tot*100) : 0;
-    return "<tr><td><div class='name'>"+esc(p.name)+"</div></td><td>"+c.P+"</td><td>"+c.L+"</td><td>"+c.A+"</td><td>"+c.V+"</td><td><b>"+(tot?pct+"%":"—")+"</b></td></tr>";
-  }).join("");
-  return h + '<div class="card tw"><table><tr><th>Name</th><th>Present</th><th>Late</th><th>Absent</th><th>Leave</th><th>Attendance</th></tr>'+rows+"</table></div>";
+  var h = '<div class="card row"><label class="mut">Month</label><input type="month" value="'+month+'" onchange="month=this.value;render()"></div>';
+  if(!ST.staff.length) return h + '<div class="empty">No staff yet.</div>';
+  var rows = ST.staff.map(function(p){
+    var c = {P:0, L:0, A:0, V:0};
+    for(var d in ST.rec){ 
+      if(d.slice(0,7) === month && ST.rec[d][p.id]){
+        var st = typeof ST.rec[d][p.id] === 'object' ? ST.rec[d][p.id].status : ST.rec[d][p.id];
+        if(c[st] !== undefined) c[st]++;
+      }
+    }
+    var worked = c.P + c.L, tot = worked + c.A + c.V, pct = tot ? Math.round(worked/tot*100) : 0;
+    return "<tr><td><div class='name'>"+esc(p.name)+"</div></td><td>"+c.P+"</td><td>"+c.L+"</td><td>"+c.A+"</td><td>"+c.V+"</td><td><b>"+(tot?pct+"%":"—")+"</b></td></tr>";
+  }).join("");
+  return h + '<div class="card tw"><table><tr><th>Name</th><th>Present</th><th>Late</th><th>Absent</th><th>Leave</th><th>Attendance</th></tr>'+rows+"</table></div>";
 }
 
 function vStaff(){
-  var h = locSettings() + '<div class="card"><div class="name" style="margin-bottom:8px">Add Staff Member & Account</div><div class="row" style="margin-bottom:8px"><input class="grow" id="nn" placeholder="Full name"><input class="grow" id="nr" placeholder="Role (optional)"></div><div class="row"><input class="grow" id="nu" placeholder="Username"><input class="grow" type="password" id="np" placeholder="Password"><button class="pri" onclick="addStaffAndAccount()">Add Staff</button></div></div>';
-  if(!ST.staff.length) return h + '<div class="empty">Nobody added yet.</div>';
-  return h + ST.staff.map(function(p){
-    var uname = "", upass = "";
-    for(var u in ST.accounts){ 
-      if(ST.accounts[u].staffId === p.id) {
-        uname = u;
-        upass = ST.accounts[u].pass;
-      }
-    }
-    return '<div class="card row"><div class="grow"><div class="name">'+esc(p.name)+'</div><div class="mut">Role: '+esc(p.role||"—")+' | Username: <b>'+esc(uname)+'</b> | Password: <b>'+esc(upass)+'</b></div></div><button class="del" onclick="delStaff(\''+p.id+'\')">Remove</button></div>';
-  }).join("");
+  var h = locSettings() + '<div class="card"><div class="name" style="margin-bottom:8px">Add Staff Member & Account</div><div class="row" style="margin-bottom:8px"><input class="grow" id="nn" placeholder="Full name"><input class="grow" id="nr" placeholder="Role (optional)"></div><div class="row"><input class="grow" id="nu" placeholder="Username"><input class="grow" type="password" id="np" placeholder="Password"><button class="pri" onclick="addStaffAndAccount()">Add Staff</button></div></div>';
+  if(!ST.staff.length) return h + '<div class="empty">Nobody added yet.</div>';
+  return h + ST.staff.map(function(p){
+    var uname = "", upass = "";
+    for(var u in ST.accounts){ 
+      if(ST.accounts[u].staffId === p.id) {
+        uname = u;
+        upass = ST.accounts[u].pass;
+      }
+    }
+    return '<div class="card row"><div class="grow"><div class="name">'+esc(p.name)+'</div><div class="mut">Role: '+esc(p.role||"—")+' | Username: <b>'+esc(uname)+'</b> | Password: <b>'+esc(upass)+'</b></div></div><button class="del" onclick="delStaff(\''+p.id+'\')">Remove</button></div>';
+  }).join("");
 }
 
 function vMyPortal(){
-  var staffId = currentUser.staffId;
-  var c = {P:0, L:0, A:0, V:0};
-  for(var d in ST.rec){
-    if(d.slice(0,7) === month && ST.rec[d][staffId]){
-      var st = typeof ST.rec[d][staffId] === 'object' ? ST.rec[d][staffId].status : ST.rec[d][staffId];
-      if(c[st] !== undefined) c[st]++;
-    }
-  }
-  var worked = c.P + c.L, tot = worked + c.A + c.V, pct = tot ? Math.round(worked/tot*100) : 0;
-  
-  var todayRec = ST.rec[date] && ST.rec[date][staffId] ? ST.rec[date][staffId] : null;
-  var todayStatus = todayRec ? (typeof todayRec === 'object' ? todayRec.status : todayRec) : null;
-  var todayTime = (todayRec && typeof todayRec === 'object' && todayRec.time) ? todayRec.time : null;
+  var staffId = currentUser.staffId;
+  var c = {P:0, L:0, A:0, V:0};
+  for(var d in ST.rec){
+    if(d.slice(0,7) === month && ST.rec[d][staffId]){
+      var st = typeof ST.rec[d][staffId] === 'object' ? ST.rec[d][staffId].status : ST.rec[d][staffId];
+      if(c[st] !== undefined) c[st]++;
+    }
+  }
+  var worked = c.P + c.L, tot = worked + c.A + c.V, pct = tot ? Math.round(worked/tot*100) : 0;
+  
+  var todayRec = ST.rec[date] && ST.rec[date][staffId] ? ST.rec[date][staffId] : null;
+  var todayStatus = todayRec ? (typeof todayRec === 'object' ? todayRec.status : todayRec) : null;
+  var todayTime = (todayRec && typeof todayRec === 'object' && todayRec.time) ? todayRec.time : null;
 
-  var h = '<div class="card"><div class="name">My Attendance Portal: '+esc(currentUser.name)+'</div><div class="mut">Today Status: <b>'+(todayStatus ? LBL[todayStatus] + (todayTime ? ' at ' + todayTime : '') : 'Not Marked Yet')+'</b></div></div>';
-  h += locBanner();
-  h += '<div class="card row"><label class="mut">View Month</label><input type="month" value="'+month+'" onchange="month=this.value;render()"></div>';
-  h += '<div class="stats"><div class="stat"><b style="color:var(--p)">'+c.P+'</b><span>Present</span></div><div class="stat"><b style="color:var(--l)">'+c.L+'</b><span>Late</span></div><div class="stat"><b style="color:var(--a)">'+c.A+'</b><span>Absent</span></div><div class="stat"><b style="color:var(--v)">'+c.V+'</b><span>Leave</span></div><div class="stat"><b>'+(tot?pct+"%":"—")+'</b><span>Rate</span></div></div>';
-  
-  h += '<div class="card"><div class="name" style="margin-bottom:8px">Mark Today\'s Attendance ('+date+')</div><div class="seg">'+["P","L","A","V"].map(function(k){return '<button class="'+k+(todayStatus===k?" on":"")+'" onclick="mark(\''+staffId+"','"+k+'\')">'+LBL[k]+"</button>"}).join("")+'</div></div>';
-  return h;
+  var h = '<div class="card"><div class="name">My Attendance Portal: '+esc(currentUser.name)+'</div><div class="mut">Today Status: <b>'+(todayStatus ? LBL[todayStatus] + (todayTime ? ' at ' + todayTime : '') : 'Not Marked Yet')+'</b></div></div>';
+  h += locBanner();
+  h += '<div class="card row"><label class="mut">View Month</label><input type="month" value="'+month+'" onchange="month=this.value;render()"></div>';
+  h += '<div class="stats"><div class="stat"><b style="color:var(--p)">'+c.P+'</b><span>Present</span></div><div class="stat"><b style="color:var(--l)">'+c.L+'</b><span>Late</span></div><div class="stat"><b style="color:var(--a)">'+c.A+'</b><span>Absent</span></div><div class="stat"><b style="color:var(--v)">'+c.V+'</b><span>Leave</span></div><div class="stat"><b>'+(tot?pct+"%":"—")+'</b><span>Rate</span></div></div>';
+  
+  h += '<div class="card"><div class="name" style="margin-bottom:8px">Mark Today\'s Attendance ('+date+')</div><div class="seg">'+["P","L","A","V"].map(function(k){return '<button class="'+k+(todayStatus===k?" on":"")+'" onclick="mark(\''+staffId+"','"+k+'\')">'+LBL[k]+"</button>"}).join("")+'</div></div>';
+  return h;
 }
 
 function render(){
-  if(!currentUser){ renderAuth(); return; }
-  var html = '<div class="top-bar"><h1>Staff Attendance</h1><button class="sec" onclick="logout()">Log out ('+esc(currentUser.name)+')</button></div>';
-  html += '<nav id="nav">'+renderNav()+'</nav><div id="view"></div>';
-  document.getElementById("app").innerHTML = html;
-  
-  var viewEl = document.getElementById("view");
-  if(currentUser.role === "admin"){
-    viewEl.innerHTML = tab==="today" ? vToday() : tab==="report" ? vReport() : vStaff();
-  } else {
-    viewEl.innerHTML = vMyPortal();
-  }
+  if(!currentUser){ renderAuth(); return; }
+  var html = '<div class="top-bar"><h1>Staff Attendance</h1><button class="sec" onclick="logout()">Log out ('+esc(currentUser.name)+')</button></div>';
+  html += '<nav id="nav">'+renderNav()+'</nav><div id="view"></div>';
+  document.getElementById("app").innerHTML = html;
+  
+  var viewEl = document.getElementById("view");
+  if(currentUser.role === "admin"){
+    viewEl.innerHTML = tab==="today" ? vToday() : tab==="report" ? vReport() : vStaff();
+  } else {
+    viewEl.innerHTML = vMyPortal();
+  }
 }
 
 function renderKeep(){
-  render();
-  var e = document.getElementById("sq");
-  if(e){ e.focus(); e.setSelectionRange(q.length, q.length); }
+  render();
+  var e = document.getElementById("sq");
+  if(e){ e.focus(); e.setSelectionRange(q.length, q.length); }
 }
 
 load();
