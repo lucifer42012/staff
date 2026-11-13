@@ -89,9 +89,21 @@ var isLoaded = false;
 
 function load(){
   render();
+
+  var timeoutTriggered = false;
+  var timer = setTimeout(function(){
+    if(!isLoaded){
+      timeoutTriggered = true;
+      console.warn("Fetch timed out. Using local fallback.");
+      handleLocalFallback();
+    }
+  }, 3000);
+
   fetch(API_URL)
     .then(function(res){ return res.json(); })
     .then(function(res){
+      if(timeoutTriggered) return;
+      clearTimeout(timer);
       if(res && res.status === "success" && res.data && typeof res.data === "object"){
         ST.staff = res.data.staff || ST.staff;
         ST.rec = res.data.rec || ST.rec;
@@ -100,25 +112,34 @@ function load(){
           ST.accounts = Object.assign({}, ST.accounts, res.data.accounts);
         }
       }
+      finishLoading();
     })
     .catch(function(err){
-      console.warn("Using local fallback", err);
-      try {
-        var s = localStorage.getItem("attendance-v5");
-        if(s) {
-          var parsed = JSON.parse(s);
-          ST = Object.assign(ST, parsed);
-        }
-      }catch(e){}
-    })
-    .finally(function(){
-      if(!ST.accounts || !ST.accounts["admin"]){
-        ST.accounts = ST.accounts || {};
-        ST.accounts["admin"] = {pass: "admin123", role: "admin", name: "Administrator", staffId: null};
-      }
-      isLoaded = true;
-      render();
+      if(timeoutTriggered) return;
+      clearTimeout(timer);
+      console.warn("Fetch error, using local fallback", err);
+      handleLocalFallback();
     });
+}
+
+function handleLocalFallback(){
+  try {
+    var s = localStorage.getItem("attendance-v5");
+    if(s) {
+      var parsed = JSON.parse(s);
+      ST = Object.assign(ST, parsed);
+    }
+  }catch(e){}
+  finishLoading();
+}
+
+function finishLoading(){
+  if(!ST.accounts || !ST.accounts["admin"]){
+    ST.accounts = ST.accounts || {};
+    ST.accounts["admin"] = {pass: "admin123", role: "admin", name: "Administrator", staffId: null};
+  }
+  isLoaded = true;
+  render();
 }
 
 function save(){
@@ -140,7 +161,6 @@ function esc(s){
   return String(s).replace(/[&<>"]/g, function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]});
 }
 
-// Record helpers for backward compatibility
 function getStatus(rec){
   if(!rec) return null;
   return typeof rec === 'object' ? rec.status : rec;
