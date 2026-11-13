@@ -75,209 +75,96 @@ function currentTimeStr(){
 // PASTE YOUR WEB APP URL HERE INSIDE THE QUOTES:
 var API_URL = "https://script.google.com/macros/s/AKfycbwAXs8_o3YuQG7hLLGkIRKUQcNliDqN_b35C7v1BP8a62CYjsdf5FxW6AP738ZCkL7Z/exec";
 
+var isLoaded = false;
+
 function load(){
+  render(); // Shows loading indicator while fetching
   fetch(API_URL)
     .then(function(res){ return res.json(); })
     .then(function(res){
-      if(res.status === "success" && res.data){
-        ST = res.data;
+      if(res && res.status === "success" && res.data && typeof res.data === "object"){
+        ST.staff = res.data.staff || ST.staff;
+        ST.rec = res.data.rec || ST.rec;
+        ST.loc = res.data.loc || ST.loc;
+        if(res.data.accounts) {
+          ST.accounts = Object.assign({}, ST.accounts, res.data.accounts);
+        }
       }
-      if(!ST.accounts || !ST.accounts["admin"]){
-        ST.accounts = ST.accounts || {};
-        ST.accounts["admin"] = {pass: "admin123", role: "admin", name: "Administrator", staffId: null};
-      }
-      render();
     })
     .catch(function(err){
       console.warn("Using local fallback", err);
       try {
         var s = localStorage.getItem("attendance-v5");
-        if(s) ST = JSON.parse(s);
+        if(s) {
+          var parsed = JSON.parse(s);
+          ST = Object.assign(ST, parsed);
+        }
       }catch(e){}
+    })
+    .finally(function(){
       if(!ST.accounts || !ST.accounts["admin"]){
         ST.accounts = ST.accounts || {};
         ST.accounts["admin"] = {pass: "admin123", role: "admin", name: "Administrator", staffId: null};
       }
+      isLoaded = true;
       render();
     });
 }
 
-function save(){
-  try {
-    localStorage.setItem("attendance-v5", JSON.stringify(ST));
-  }catch(e){}
-
-  fetch(API_URL, {
-    method: "POST",
-    mode: "no-cors",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(ST)
-  }).catch(function(err){
-    console.error("Sync error:", err);
-  });
-}
-
-function esc(s){
-  return String(s).replace(/[&<>"]/g, function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]});
-}
-
 function renderAuth(){
-  document.getElementById("app").innerHTML = `
-    <div class="card auth-wrap">
-      <h1>Staff Attendance Login</h1>
-      <div style="margin-bottom:12px">
-        <label class="mut">Username</label>
-        <input type="text" id="login-user" placeholder="Enter username">
-      </div>
-      <div style="margin-bottom:16px">
-        <label class="mut">Password</label>
-        <input type="password" id="login-pass" placeholder="Enter password">
-      </div>
-      <button class="pri" style="width:100%" onclick="doLogin()">Log In</button>
-    </div>
-  `;
+  if(!isLoaded){
+    document.getElementById("app").innerHTML = '<div class="card auth-wrap" style="text-align:center">Loading system data...</div>';
+    return;
+  }
+  document.getElementById("app").innerHTML = `
+    <div class="card auth-wrap">
+      <h1>Staff Attendance Login</h1>
+      <div style="margin-bottom:12px">
+        <label class="mut">Username</label>
+        <input type="text" id="login-user" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="Enter username">
+      </div>
+      <div style="margin-bottom:16px">
+        <label class="mut">Password</label>
+        <input type="password" id="login-pass" placeholder="Enter password" onkeydown="if(event.key==='Enter')doLogin()">
+      </div>
+      <button class="pri" style="width:100%" onclick="doLogin()">Log In</button>
+    </div>
+  `;
 }
 
 function doLogin(){
-  var u = document.getElementById("login-user").value.trim();
-  var p = document.getElementById("login-pass").value;
-  if(!ST.accounts[u] || ST.accounts[u].pass !== p){
-    alert("Invalid username or password.");
-    return;
-  }
-  currentUser = {username: u, ...ST.accounts[u]};
-  tab = currentUser.role === "admin" ? "today" : "myportal";
-  render();
-}
+  // Normalize username to lowercase and trim spaces
+  var u = document.getElementById("login-user").value.trim().toLowerCase();
+  var p = document.getElementById("login-pass").value.trim();
+  
+  // Match username case-insensitively against stored accounts
+  var matchedKey = Object.keys(ST.accounts).find(function(k){
+    return k.toLowerCase() === u;
+  });
 
-function logout(){
-  currentUser = null;
-  render();
-}
-
-function renderNav(){
-  if(currentUser.role === "admin"){
-    var t = {today: "Daily", report: "Monthly", staff: "Staff & Accounts"};
-    return Object.keys(t).map(function(k){
-      return '<button class="'+(tab===k?"on":"")+'" onclick="tab=\''+k+'\';render()">'+t[k]+"</button>";
-    }).join("");
-  } else {
-    return '<button class="on">My Attendance Portal</button>';
-  }
-}
-
-function dist(a,b,c,d){
-  var R = 6371000, x = Math.PI/180, dl = (c-a)*x, dg = (d-b)*x;
-  var h = Math.sin(dl/2)*Math.sin(dl/2) + Math.cos(a*x)*Math.cos(c*x)*Math.sin(dg/2)*Math.sin(dg/2);
-  return 2 * R * Math.asin(Math.sqrt(h));
-}
-
-function getPos(cb){
-  if(!navigator.geolocation) return cb("This browser does not support location.");
-  navigator.geolocation.getCurrentPosition(
-    function(p){ cb(null, p); },
-    function(e){ cb(e.code === 1 ? "Location permission denied." : "Could not get your location."); },
-    {enableHighAccuracy: true, timeout: 12000, maximumAge: 0}
-  );
-}
-
-function checkLoc(){
-  GPS = {msg: "Checking location…"};
-  render();
-  getPos(function(err, p){
-    GPS = err ? {err: err} : {d: dist(p.coords.latitude, p.coords.longitude, ST.loc.lat, ST.loc.lng), t: Date.now()};
-    render();
-  });
-}
-
-function gate(fn){
-  if(!ST.loc.on){ fn(); return; }
-  if(date !== today()){ alert("With location lock on, attendance can only be marked for today."); return; }
-  getPos(function(err, p){
-    if(err){ GPS = {err: err}; render(); alert(err); return; }
-    var d = dist(p.coords.latitude, p.coords.longitude, ST.loc.lat, ST.loc.lng);
-    GPS = {d: d, t: Date.now()};
-    if(d > ST.loc.r){ render(); alert("You are " + Math.round(d) + " m away. Move within " + ST.loc.r + " m."); return; }
-    fn();
-  });
-}
-
-function locBanner(){
-  if(!ST.loc.on) return "";
-  var g = GPS, t, c = "var(--mut)";
-  if(!g || g.msg) t = (g && g.msg) || "Location not checked yet";
-  else if(g.err) { t = g.err; c = "var(--a)"; }
-  else if(g.d <= ST.loc.r) { t = "At workplace (" + Math.round(g.d) + " m away). Marking enabled"; c = "var(--p)"; }
-  else { t = "Outside allowed area (" + Math.round(g.d) + " m away, limit " + ST.loc.r + " m)"; c = "var(--a)"; }
-  return '<div class="card row"><span class="grow" style="font-weight:600;color:'+c+'">📍 '+t+'</span><button class="pri" onclick="checkLoc()">Check location</button></div>';
-}
-
-function setOffice(){
-  getPos(function(err, p){
-    if(err){ alert(err); return; }
-    ST.loc.lat = p.coords.latitude; ST.loc.lng = p.coords.longitude;
-    save(); render();
-    alert("Workplace location saved successfully.");
-  });
-}
-
-function setRadius(v){
-  v = parseInt(v, 10);
-  if(!(v >= 10)) v = 100;
-  ST.loc.r = v; save(); render();
-}
-
-function toggleLock(on){
-  if(on && ST.loc.lat == null){ alert("Set workplace location first."); render(); return; }
-  ST.loc.on = on; save(); GPS = null;
-  if(on) checkLoc(); else render();
-}
-
-function locSettings(){
-  var L = ST.loc;
-  return '<div class="card"><div class="row"><div class="grow"><div class="name">📍 Location lock</div><div class="mut">'+(L.lat==null?"Workplace not set":"Workplace set: "+L.lat.toFixed(5)+", "+L.lng.toFixed(5))+'</div></div><label class="row"><input type="checkbox" '+(L.on?"checked":"")+' onchange="toggleLock(this.checked)"> On</label></div><div class="row" style="margin-top:10px"><button class="pri" onclick="setOffice()">Use current location as workplace</button><label class="mut">Radius (m) <input type="number" min="10" step="10" value="'+L.r+'" style="width:90px" onchange="setRadius(this.value)"></label></div></div>';
-}
-
-function mark(id, s){
-  gate(function(){
-    var r = ST.rec[date] = ST.rec[date] || {};
-    var currentStatus = typeof r[id] === 'object' ? r[id].status : r[id];
-    if(currentStatus === s) {
-      delete r[id]; 
-    } else {
-      r[id] = { status: s, time: currentTimeStr() };
-    }
-    save(); render();
-  });
-}
-
-function markAll(){
-  gate(function(){
-    var r = ST.rec[date] = ST.rec[date] || {};
-    ST.staff.forEach(function(p){ 
-      var currentStatus = typeof r[p.id] === 'object' ? r[p.id].status : r[p.id];
-      if(!currentStatus) {
-        r[p.id] = { status: "P", time: currentTimeStr() };
-      }
-    });
-    save(); render();
-  });
+  if(!matchedKey || ST.accounts[matchedKey].pass !== p){
+    alert("Invalid username or password.");
+    return;
+  }
+  currentUser = {username: matchedKey, ...ST.accounts[matchedKey]};
+  tab = currentUser.role === "admin" ? "today" : "myportal";
+  render();
 }
 
 function addStaffAndAccount(){
-  var n = document.getElementById("nn").value.trim();
-  var r = document.getElementById("nr").value.trim();
-  var uname = document.getElementById("nu").value.trim();
-  var upass = document.getElementById("np").value;
-  
-  if(!n || !uname || !upass){ alert("Please fill name, username, and password."); return; }
-  if(ST.accounts[uname]){ alert("Username already exists."); return; }
+  var n = document.getElementById("nn").value.trim();
+  var r = document.getElementById("nr").value.trim();
+  var uname = document.getElementById("nu").value.trim().toLowerCase();
+  var upass = document.getElementById("np").value.trim();
+  
+  if(!n || !uname || !upass){ alert("Please fill name, username, and password."); return; }
+  if(ST.accounts[uname]){ alert("Username already exists."); return; }
 
-  var staffId = "s" + Date.now();
-  ST.staff.push({id: staffId, name: n, role: r});
-  ST.accounts[uname] = {pass: upass, role: "staff", name: n, staffId: staffId};
-  save(); render();
-  alert("Staff member and account created successfully!");
+  var staffId = "s" + Date.now();
+  ST.staff.push({id: staffId, name: n, role: r});
+  ST.accounts[uname] = {pass: upass, role: "staff", name: n, staffId: staffId};
+  save(); render();
+  alert("Staff member and account created successfully!");
 }
 
 function delStaff(id){
