@@ -53,17 +53,15 @@ th{font-size:12px;color:var(--mut)}
 <div class="wrap" id="app"></div>
 
 <script>
+// Admin credentials removed from client code
 var ST = {
   staff: [],
   rec: {},
   loc: {on:false, lat:null, lng:null, r:100},
-  accounts: {
-    "admin": {pass: "admin123", role: "admin", name: "Administrator", staffId: null}
-  }
+  accounts: {}
 };
 var currentUser = null;
 
-// Restore saved session if available
 try {
   var savedUser = localStorage.getItem("attendance-session");
   if(savedUser) {
@@ -73,7 +71,7 @@ try {
 
 var GPS = null, tab = currentUser ? (currentUser.role === "admin" ? "today" : "myportal") : "today", date = today(), q = "", month = today().slice(0,7);
 var LBL = {P:"Present", L:"Late", A:"Absent", V:"Leave"};
-var syncMsg = "", syncing = false;
+var syncMsg = "", syncing = false, loggingIn = false;
 
 function today(){
   var d = new Date();
@@ -85,8 +83,7 @@ function currentTimeStr(){
   return d.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'});
 }
 
-// YOUR WEB APP URL:
-var API_URL = "https://script.google.com/macros/s/AKfycbwAXs8_o3YuQG7hLLGkIRKUQcNliDqN_b35C7v1BP8a62CYjsdf5FxW6AP738ZCkL7Z/exec";
+var API_URL = "https://script.google.com/macros/s/AKfycby_NE82OIp1LX93vWlKOQNoIYPY7-mGJX5I0ehTnJU7D52QVcmyZZ_XRJSA0KTaByWL/exec";
 
 var isLoaded = false;
 
@@ -104,7 +101,6 @@ function readCache(){
   }catch(e){}
 }
 
-// Downloads data from Google Sheets and merges it in. Accounts are merged, never replaced.
 function fetchServer(cb){
   fetch(API_URL + "?t=" + Date.now())
     .then(function(r){ return r.json(); })
@@ -126,21 +122,17 @@ function fetchServer(cb){
 
 function load(){
   readCache();
-  finishLoading();                       // show the login screen immediately
-  fetchServer(function(){ refresh(); }); // late server replies are applied, not discarded
+  finishLoading();
+  fetchServer(function(){ refresh(); });
 }
 
 function finishLoading(){
-  if(!ST.accounts || !ST.accounts["admin"]){
-    ST.accounts = ST.accounts || {};
-    ST.accounts["admin"] = {pass: "admin123", role: "admin", name: "Administrator", staffId: null};
-  }
+  if(!ST.accounts) ST.accounts = {};
   if(!ST.loc) ST.loc = {on:false, lat:null, lng:null, r:100};
   isLoaded = true;
   render();
 }
 
-// Re-render without wiping what the person typed on the login screen
 function refresh(){
   var uEl = document.getElementById("login-user"), pEl = document.getElementById("login-pass");
   var u = uEl ? uEl.value : "", p = pEl ? pEl.value : "";
@@ -217,7 +209,7 @@ function renderAuth(){
         <label class="mut">Password</label>
         <input type="password" id="login-pass" placeholder="Enter password" onkeydown="if(event.key==='Enter')doLogin()">
       </div>
-      <button class="pri" style="width:100%" onclick="doLogin()">Log In</button>
+      <button class="pri" style="width:100%" onclick="doLogin()" ${loggingIn ? "disabled" : ""}>${loggingIn ? "Logging in..." : "Log In"}</button>
       <button class="sec" style="width:100%;margin-top:8px" onclick="syncNow()" ${syncing ? "disabled" : ""}>🔄 Sync accounts</button>
       <div class="mut" style="text-align:center;margin-top:6px">${esc(syncMsg)}</div>
     </div>
@@ -228,22 +220,46 @@ function doLogin(){
   var u = document.getElementById("login-user").value.trim().toLowerCase();
   var p = document.getElementById("login-pass").value.trim();
 
-  function attempt(){
-    var key = Object.keys(ST.accounts).find(function(k){ return k.toLowerCase() === u; });
-    if(!key || String(ST.accounts[key].pass) !== p) return false;
-    currentUser = Object.assign({username: key}, ST.accounts[key]);
-    try{ localStorage.setItem("attendance-session", JSON.stringify(currentUser)); }catch(e){}
-    tab = currentUser.role === "admin" ? "today" : "myportal";
-    render();
-    return true;
+  if(!u || !p) {
+    alert("Please enter both username and password.");
+    return;
   }
 
-  if(attempt()) return;
+  // 1. Check local staff accounts first
+  var key = Object.keys(ST.accounts).find(function(k){ return k.toLowerCase() === u; });
+  if(key && String(ST.accounts[key].pass) === p) {
+    completeLogin(key, ST.accounts[key]);
+    return;
+  }
 
-  // Not found locally: pull the latest accounts from the server and retry
-  fetchServer(function(){
-    if(!attempt()) alert("Invalid username or password.");
-  });
+  // 2. Verify against server-side JavaScript (Google Apps Script) for Admin or updated accounts
+  loggingIn = true;
+  refresh();
+
+  var authUrl = API_URL + "?action=login&user=" + encodeURIComponent(u) + "&pass=" + encodeURIComponent(p) + "&t=" + Date.now();
+  fetch(authUrl)
+    .then(function(r){ return r.json(); })
+    .then(function(res){
+      loggingIn = false;
+      if(res && res.status === "success" && res.user){
+        completeLogin(u, res.user);
+      } else {
+        refresh();
+        alert("Invalid username or password.");
+      }
+    })
+    .catch(function(err){
+      loggingIn = false;
+      refresh();
+      alert("Login connection failed. Check your internet or Apps Script deployment.");
+    });
+}
+
+function completeLogin(username, userObj){
+  currentUser = Object.assign({username: username}, userObj);
+  try{ localStorage.setItem("attendance-session", JSON.stringify(currentUser)); }catch(e){}
+  tab = currentUser.role === "admin" ? "today" : "myportal";
+  render();
 }
 
 function logout(){
@@ -390,7 +406,7 @@ function addStaffAndAccount(){
   var upass = document.getElementById("np").value.trim();
 
   if(!n || !uname || !upass){ alert("Please fill name, username, and password."); return; }
-  if(ST.accounts[uname]){ alert("Username already exists."); return; }
+  if(uname === "admin" || ST.accounts[uname]){ alert("Username already exists or is reserved."); return; }
 
   var staffId = "s" + Date.now();
   ST.staff.push({id: staffId, name: n, role: r});
