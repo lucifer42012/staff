@@ -425,6 +425,43 @@ function delStaff(id){
   save(); render();
 }
 
+/* ---------- Admin password ---------- */
+
+var pwBusy = false;
+
+function adminPassCard(){
+  return '<div class="card"><div class="name" style="margin-bottom:8px">🔑 Change admin password</div>'
+    + '<div class="row" style="margin-bottom:8px"><input class="grow" type="password" id="pw0" placeholder="Current password" autocomplete="current-password"></div>'
+    + '<div class="row"><input class="grow" type="password" id="pw1" placeholder="New password (min 6 chars)" autocomplete="new-password"><input class="grow" type="password" id="pw2" placeholder="Confirm new password" autocomplete="new-password"><button class="pri" onclick="changeAdminPass()" '+(pwBusy?'disabled':'')+'>'+(pwBusy?'Saving...':'Update')+'</button></div></div>';
+}
+
+function changeAdminPass(){
+  if(pwBusy) return;
+  var o = document.getElementById("pw0").value;
+  var n = document.getElementById("pw1").value;
+  var c = document.getElementById("pw2").value;
+  if(!o || !n || !c){ alert("Fill in all three password fields."); return; }
+  if(n.length < 6){ alert("New password must be at least 6 characters."); return; }
+  if(n !== c){ alert("New passwords do not match."); return; }
+  if(n === o){ alert("New password must be different from the current one."); return; }
+  pwBusy = true; render();
+  fetch(API_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ action: "changepass", user: currentUser.username, oldPass: o, newPass: n })
+  })
+    .then(function(r){ return r.json(); })
+    .then(function(res){
+      pwBusy = false; render();
+      if(res && res.status === "success") alert("Admin password changed. Use the new password next time you log in.");
+      else alert((res && res.message) || "Could not change password. Check the current password.");
+    })
+    .catch(function(){
+      pwBusy = false; render();
+      alert("Could not reach the server. Check your internet or Apps Script deployment.");
+    });
+}
+
 /* ---------- Views ---------- */
 
 function vToday(){
@@ -474,7 +511,7 @@ function vReport(){
 }
 
 function vStaff(){
-  var h = locSettings() + '<div class="card"><div class="name" style="margin-bottom:8px">Add Staff Member & Account</div><div class="row" style="margin-bottom:8px"><input class="grow" id="nn" placeholder="Full name"><input class="grow" id="nr" placeholder="Role (optional)"></div><div class="row"><input class="grow" id="nu" placeholder="Username"><input class="grow" type="password" id="np" placeholder="Password"><button class="pri" onclick="addStaffAndAccount()">Add Staff</button></div></div>';
+  var h = locSettings() + adminPassCard() + '<div class="card"><div class="name" style="margin-bottom:8px">Add Staff Member & Account</div><div class="row" style="margin-bottom:8px"><input class="grow" id="nn" placeholder="Full name"><input class="grow" id="nr" placeholder="Role (optional)"></div><div class="row"><input class="grow" id="nu" placeholder="Username"><input class="grow" type="password" id="np" placeholder="Password"><button class="pri" onclick="addStaffAndAccount()">Add Staff</button></div></div>';
   if(!ST.staff.length) return h + '<div class="empty">Nobody added yet.</div>';
   return h + ST.staff.map(function(p){
     var uname = "", upass = "";
